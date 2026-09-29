@@ -1,0 +1,8 @@
+{
+  "name": "app-gyroscope",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}

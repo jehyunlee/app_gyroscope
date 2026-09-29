@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>자이로스코프 물리 실험실 · Gyroscope Lab</title>
+<meta name="description" content="변수를 바꿔 가며 자이로스코프의 세차·장동 운동을 3D로 시뮬레이션하는 인터랙티브 실험실">
+<meta property="og:title" content="자이로스코프 물리 실험실">
+<meta property="og:description" content="수식 대신 손으로: 스핀, 기울기, 중력을 바꿔 가며 세차와 장동을 3D로 관찰하세요.">
+<meta property="og:image" content="https://app.jehyunlee.dev/gyroscope/og-image.jpg">
+<meta property="og:url" content="https://app.jehyunlee.dev/gyroscope/">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">{ "imports": { "three": "./js/vendor/three.module.js" } }</script>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>자이로스코프 물리 실험실</h1>
+    <p>토크는 각운동량의 <b>크기</b>가 아니라 <b>방향</b>을 바꾼다. 그래서 돌고 있는 바퀴는 떨어지지 않고 옆으로 돈다.</p>
+  </div>
+  <nav class="presets" id="presets" aria-label="실험 프리셋"></nav>
+</header>
+
+<main class="layout">
+  <aside class="panel controls" aria-label="변수 조절">
+    <div class="transport">
+      <button id="play" class="primary" type="button">⏸ 일시정지</button>
+      <button id="reset" type="button">↺ 처음부터</button>
+    </div>
+    <div class="transport">
+      <button id="kickDown" type="button" title="바퀴를 아래로 톡 칩니다">⬇ 아래로 톡</button>
+      <button id="kickSide" type="button" title="바퀴를 세차 방향으로 톡 칩니다">➜ 옆으로 톡</button>
+    </div>
+
+    <section>
+      <h2>초기 조건 <small>바꾸면 처음부터 다시</small></h2>
+      <div class="field" data-key="spin"></div>
+      <div class="field" data-key="theta"></div>
+      <div class="field" data-key="phiDot"></div>
+      <button id="steady" class="link" type="button">φ̇₀ = 정상 세차 속도로 맞추기 (장동 없는 출발)</button>
+      <div class="field" data-key="thetaDot"></div>
+    </section>
+
+    <section>
+      <h2>물리량 <small>실행 중에도 바로 적용</small></h2>
+      <div class="field" data-key="mass"></div>
+      <div class="field" data-key="radius"></div>
+      <div class="field" data-key="arm"></div>
+      <label class="row">바퀴 모양
+        <select id="shape"></select>
+      </label>
+      <div class="field" data-key="g"></div>
+      <div class="chips">
+        <button type="button" data-g="9.81">지구</button>
+        <button type="button" data-g="1.62">달</button>
+        <button type="button" data-g="3.71">화성</button>
+        <button type="button" data-g="24.79">목성</button>
+        <button type="button" data-g="0">무중력</button>
+      </div>
+      <div class="field" data-key="spinDamping"></div>
+      <div class="field" data-key="pivotDamping"></div>
+    </section>
+
+    <section>
+      <h2>보기</h2>
+      <div class="field" data-key="timeScale"></div>
+      <label class="check"><input type="checkbox" id="showL" checked> <i class="sw L"></i> 각운동량 <b>L</b></label>
+      <label class="check"><input type="checkbox" id="showTau" checked> <i class="sw tau"></i> 토크 <b>τ</b> (L 끝에서, τ·Δt)</label>
+      <label class="check"><input type="checkbox" id="showW"> <i class="sw w"></i> 각속도 <b>ω</b></label>
+      <label class="check"><input type="checkbox" id="showG" checked> <i class="sw g"></i> 중력 <b>mg</b></label>
+      <label class="check"><input type="checkbox" id="showTrail" checked> <i class="sw trail"></i> 축 끝 궤적</label>
+      <label class="check"><input type="checkbox" id="slowSpin" checked> 바퀴 회전을 눈에 보이게 늦춰 그리기</label>
+    </section>
+  </aside>
+
+  <section class="stage">
+    <div class="viewport" id="viewport">
+      <div class="hud" id="hud"></div>
+      <div class="legend">
+        <span><i class="sw L"></i>L 각운동량</span>
+        <span><i class="sw tau"></i>τ 토크</span>
+        <span><i class="sw w"></i>ω 각속도</span>
+        <span><i class="sw g"></i>mg 중력</span>
+      </div>
+      <p class="hint">드래그: 회전 · 휠: 확대 · 우클릭 드래그: 이동</p>
+    </div>
+    <div class="charts panel">
+      <canvas id="chart" height="220" aria-label="기울기와 세차 속도 그래프"></canvas>
+    </div>
+  </section>
+
+  <article class="panel learn" id="learn">
+    <h2>수식 없이 이해하기</h2>
+
+    <details open>
+      <summary>① 왜 떨어지지 않을까?</summary>
+      <p>핵심 식은 하나뿐입니다: <span class="eq">τ = dL/dt</span></p>
+      <ol>
+        <li>바퀴가 빠르게 돌면 축 방향으로 큰 <b class="cL">각운동량 L</b>이 생깁니다.</li>
+        <li>중력은 바퀴를 <i>아래로</i> 당기지만, 만드는 <b class="cT">토크 τ = r × F</b>는 <i>수평 옆</i> 방향입니다.</li>
+        <li>L은 τ 방향으로 조금씩 자랍니다 (ΔL = τΔt). τ가 L에 수직이면 L의 <b>길이는 그대로, 방향만</b> 돌아갑니다.</li>
+        <li>그래서 축은 떨어지는 대신 수평으로 빙글 돕니다. 이것이 <b>세차 운동(precession)</b>입니다.</li>
+      </ol>
+      <p class="try">👀 빨간 τ 화살표가 항상 주황 L의 끝이 움직이는 쪽을 가리키는지 보세요. 그다음 <button type="button" data-preset="nospin">스핀 0</button>으로 바꾸면 L이 거의 없어서 τ가 그대로 '넘어짐'이 됩니다.</p>
+    </details>
+
+    <details open>
+      <summary>② 세차 속도는 얼마나 빠를까?</summary>
+      <p>1초 동안 L 끝이 옆으로 가는 거리(τ)를 L의 반경으로 나누면 회전 속도가 나옵니다.</p>
+      <p class="eq big">Ω = <span class="frac"><span>m g l</span><span>I<sub>s</sub> ω<sub>s</sub></span></span></p>
+      <div class="live" id="liveFormula"></div>
+      <ul>
+        <li>스핀 ω<sub>s</sub>를 2배 → 세차는 <b>절반</b>. 빨리 돌수록 느긋하게 돕니다.</li>
+        <li>막대 l을 늘리거나 중력 g를 키우면 → 토크가 커져서 세차가 빨라집니다.</li>
+        <li>기울기 θ와는 (거의) 무관합니다. sinθ가 토크와 L의 수평 성분에 똑같이 들어가 약분되기 때문.</li>
+      </ul>
+      <p class="note">참고 사이트의 정확한 식(막대 질량 무시): <span class="eq">(I<sub>s</sub> − I<sub>⊥</sub>) cosθ · Ω² + I<sub>s</sub> ω<sub>s</sub> Ω − m g l = 0</span>. 위의 간단한 식은 스핀이 빠를 때의 근사이고, 아래 수치의 '정확한 해'가 이 이차방정식의 느린 근입니다.</p>
+    </details>
+
+    <details>
+      <summary>③ 끄덕임: 장동(nutation)</summary>
+      <p>세차 없이 <b>그냥 손을 놓으면</b> 처음엔 옆으로 갈 속도가 없습니다. 축은 살짝 떨어지면서 세차 속도를 얻고, 지나쳤다가 다시 올라옵니다. 이 끄덕임이 장동입니다.</p>
+      <div class="shapes">
+        <button type="button" data-preset="cusp"><b>뾰족점</b><span>그냥 놓기 (φ̇₀ = 0)</span></button>
+        <button type="button" data-preset="loop"><b>고리</b><span>반대로 밀기 (φ̇₀ &lt; 0)</span></button>
+        <button type="button" data-preset="wave"><b>물결</b><span>더 세게 밀기 (φ̇₀ &gt; Ω)</span></button>
+      </div>
+      <div class="live" id="liveNutation"></div>
+      <p>스핀이 빠를수록 장동은 <b>더 빠르고 더 작아집니다</b> (진폭 ∝ 1/ω<sub>s</sub>²). 장난감 자이로가 매끄럽게 세차만 하는 것처럼 보이는 이유입니다. 실제로는 <b>마찰</b>이 장동을 금방 지워 버립니다.</p>
+    </details>
+
+    <details>
+      <summary>④ 자이로 안정성: 왜 방향을 지킬까?</summary>
+      <p>충격(각충격량 ΔL)을 받으면 L의 방향이 바뀌는 각은 대략 <span class="eq">Δφ ≈ |ΔL| / |L|</span>. L이 클수록 같은 충격에도 거의 흔들리지 않습니다.</p>
+      <p class="try">👉 <b>⬇ 아래로 톡</b>을 눌러 보세요. 바퀴를 아래로 쳤는데 축은 <b>옆으로</b> 비껴갑니다. 스핀을 줄이고 다시 치면 차이가 확연합니다.</p>
+      <p>중력 토크가 없으면(<button type="button" data-preset="free">무중력</button>) L은 공간에 완전히 고정됩니다. 짐벌에 매단 자이로가 배·비행기의 방향 기준이 되는 원리입니다.</p>
+      <div class="live" id="liveSleep"></div>
+      <p class="try">🌀 <button type="button" data-preset="sleep">잠자는 팽이</button>에서 스핀을 30~35 rad/s로 내려 보세요. 곧게 서 있던 팽이가 60° 가까이 고개를 떨구었다가 다시 일어선다를 반복합니다. 마찰이 없으면 에너지가 보존돼서 돌아오지만, 진짜 팽이는 마찰 때문에 그대로 쓰러집니다.</p>
+    </details>
+
+    <details>
+      <summary>기호 정리</summary>
+      <table class="symbols">
+        <tr><td>ω<sub>s</sub> = ψ̇</td><td>스핀: 축에 대한 바퀴의 회전 속도</td></tr>
+        <tr><td>Ω = φ̇</td><td>세차: 축이 수직선 둘레를 도는 속도</td></tr>
+        <tr><td>θ, θ̇</td><td>수직선과 막대 사이 각, 그 변화율(장동)</td></tr>
+        <tr><td>l, r, m</td><td>피벗–바퀴 중심 거리, 바퀴 반지름, 질량</td></tr>
+        <tr><td>I<sub>s</sub></td><td>스핀축 관성모멘트 (고리 mr², 원판 ½mr²)</td></tr>
+        <tr><td>I<sub>⊥</sub></td><td>피벗에 대한 수직축 관성모멘트 (+ml²)</td></tr>
+      </table>
+      <p class="note">시뮬레이션은 오일러 각 대신 쿼터니언과 각운동량 벡터를 4차 룽게-쿠타로 적분합니다. 그래서 세차·장동·수직 팽이가 근사 없이 한 방정식에서 모두 나옵니다.</p>
+    </details>
+
+    <p class="source">참고: <a href="https://www.real-world-physics-problems.com/gyroscope-physics.html" target="_blank" rel="noopener">Real World Physics Problems — Gyroscope Physics</a></p>
+  </article>
+</main>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
