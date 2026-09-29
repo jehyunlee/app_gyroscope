@@ -77,6 +77,15 @@ test('without spin the wheel falls like a pendulum', () => {
   assert.ok(observe(state, base).theta > 100 * deg);
 });
 
+test('a weak spin (1 rad/s) falls; frictionless it swings back, with pivot friction it stays down', () => {
+  const ic = { theta: 70 * deg, spin: 1, phiDot: 1.48, thetaDot: 0 };
+  const free = simulate(initialState(ic, base), base, 0.3).state;
+  assert.ok(observe(free, base).theta > 140 * deg, 'drops through horizontal within 0.3 s');
+  const p = { ...base, pivotDamping: 0.015 };
+  const damped = simulate(initialState(ic, p), p, 10).state;
+  assert.ok(observe(damped, p).theta > 160 * deg, 'settles hanging down');
+});
+
 test('without gravity the angular momentum vector is fixed in space', () => {
   const p = { ...base, g: 0 };
   const s0 = initialState({ theta: 30 * deg, spin: 40, phiDot: 3, thetaDot: 0.5 }, p);

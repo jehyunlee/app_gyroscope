@@ -49,7 +49,8 @@ const PRESETS = [
   { id: 'cusp', label: '그냥 놓기 (뾰족점)', set: { spin: 50, theta: 60, phiDot: 0, timeScale: 0.25 } },
   { id: 'loop', label: '고리 장동', set: { spin: 50, theta: 60, phiDot: -2, timeScale: 0.25 } },
   { id: 'wave', label: '물결 장동', set: { spin: 50, theta: 60, phiDot: 5, timeScale: 0.25 } },
-  { id: 'nospin', label: '스핀 0 (넘어짐)', set: { spin: 0, theta: 60, phiDot: 0 } },
+  // Pivot friction lets it come to rest hanging down; frictionless it would swing back up forever.
+  { id: 'nospin', label: '스핀 0 (넘어짐)', set: { spin: 0, theta: 60, phiDot: 0, pivotDamping: 0.015, timeScale: 0.5 } },
   { id: 'sleep', label: '잠자는 팽이', set: { spin: 70, theta: 3, phiDot: 0 } },
   { id: 'free', label: '무중력', set: { spin: 40, theta: 30, phiDot: 4, g: 0 } },
   { id: 'friction', label: '마찰 있는 현실', steady: true, set: { spin: 120, theta: 80, spinDamping: 0.0006, pivotDamping: 0.004 } },
@@ -461,7 +462,8 @@ function updateTexts() {
   const p = physicsParams();
   const o = observe(sim.state, p);
   const { I1, I3 } = inertia(p);
-  const theory = steadyPrecession(o.theta, o.spin, p);
+  // With (almost) no spin there is no gyroscope to precess; the pendulum root is not what we mean here.
+  const theory = Math.abs(o.spin) < 1 ? null : steadyPrecession(o.theta, o.spin, p);
   const approx = gyroscopicApprox(o.spin, p);
   const threshold = sleepingThreshold(p);
   const drift = o.energy - sim.E0;
@@ -471,10 +473,11 @@ function updateTexts() {
     <dt>시간</dt><dd>${fmt(sim.t, 2)} s${params.timeScale !== 1 ? ` <span class="slow">×${fmt(params.timeScale, 2)}</span>` : ''}</dd>
     <dt>기울기 θ</dt><dd>${fmt(o.theta / DEG, 1)}°</dd>
     <dt>세차 속도 Ω</dt><dd>${fmt(o.phiDot, 2)} rad/s</dd>
-    <dt>정상 세차 이론값</dt><dd>${torqueFree ? '토크 없음' : theory === null || Math.abs(o.spin) < 1 ? '해 없음' : `${fmt(theory, 2)} rad/s`}</dd>
+    <dt>정상 세차 이론값</dt><dd>${torqueFree ? '토크 없음' : theory === null ? '해 없음' : `${fmt(theory, 2)} rad/s`}</dd>
     <dt>스핀 ω<sub>s</sub></dt><dd>${fmt(o.spin, 1)} rad/s</dd>
     <dt>장동 주파수 ≈</dt><dd>${fmt(nutationRate(o.w3, p) / (2 * Math.PI), 2)} Hz</dd>
     <dt>|L|</dt><dd>${fmt(vec.norm(sim.state.L) * 1000, 1)} g·m²/s</dd>
+    ${!damped && !torqueFree && Math.abs(o.w3) < 0.5 * sleepingThreshold(p) ? '<dt class="note-row">⚠️ 스핀이 너무 약해 떨어집니다</dt><dd class="note-row">마찰 0이라 진자처럼 되튕겨 올라옴</dd>' : ''}
     <dt>${damped ? '마찰로 잃은 에너지' : '에너지 오차'}</dt><dd class="${!damped && Math.abs(drift) > 1e-3 ? 'warn' : ''}">${damped ? joules(drift) : `${fmt(drift * 1000, 3)} mJ`}</dd>`;
 
   document.getElementById('liveFormula').innerHTML = torqueFree
@@ -553,7 +556,7 @@ function drawChart() {
 
   const p = physicsParams();
   const o = observe(sim.state, p);
-  const theory = p.g === 0 || p.arm === 0 ? null : steadyPrecession(o.theta, o.spin, p);
+  const theory = p.g === 0 || p.arm === 0 || Math.abs(o.spin) < 1 ? null : steadyPrecession(o.theta, o.spin, p);
   panel(0, 'theta', '#c792ea', '기울기 θ (클수록 아래로 처짐) — 흔들림이 장동', '°', null);
   panel(half + 10, 'phiDot', '#ff9f1c', '세차 속도 Ω = φ̇ — 점선: 정상 세차 이론값', '', theory);
 }
