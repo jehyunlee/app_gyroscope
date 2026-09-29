@@ -71,6 +71,7 @@ button, select, input { font: inherit; color: inherit; }
 
 .transport { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
 .transport button { border-radius: 8px; padding: 7px 8px; }
+.transport button:disabled { opacity: .4; cursor: not-allowed; }
 .transport .primary { background: #1f3552; border-color: var(--accent); }
 
 .field { margin: 8px 0; }

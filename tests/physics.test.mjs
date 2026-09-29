@@ -10,6 +10,12 @@ import {
   inertia,
   vec,
 } from '../js/physics.js';
+import { createWorld, stepWorld, observeWorld, detach, freeStep, STAND } from '../js/world.js';
+
+const runWorld = (world, p, seconds) => {
+  for (let t = 0; t < seconds; t += 0.05) stepWorld(world, p, 0.05);
+  return world;
+};
 
 const base = { mass: 1, radius: 0.1, arm: 0.15, shape: 'ring', g: 9.81, spinDamping: 0, pivotDamping: 0 };
 const deg = Math.PI / 180;
@@ -77,15 +83,6 @@ test('without spin the wheel falls like a pendulum', () => {
   assert.ok(observe(state, base).theta > 100 * deg);
 });
 
-test('a weak spin (1 rad/s) falls; frictionless it swings back, with pivot friction it stays down', () => {
-  const ic = { theta: 70 * deg, spin: 1, phiDot: 1.48, thetaDot: 0 };
-  const free = simulate(initialState(ic, base), base, 0.3).state;
-  assert.ok(observe(free, base).theta > 140 * deg, 'drops through horizontal within 0.3 s');
-  const p = { ...base, pivotDamping: 0.015 };
-  const damped = simulate(initialState(ic, p), p, 10).state;
-  assert.ok(observe(damped, p).theta > 160 * deg, 'settles hanging down');
-});
-
 test('without gravity the angular momentum vector is fixed in space', () => {
   const p = { ...base, g: 0 };
   const s0 = initialState({ theta: 30 * deg, spin: 40, phiDot: 3, thetaDot: 0.5 }, p);
@@ -125,4 +122,51 @@ test('inertia follows the ring and disc formulas', () => {
   assert.ok(Math.abs(ring.I3 - 0.01) < 1e-15 && Math.abs(ring.I1 - (0.005 + 0.0225)) < 1e-15);
   const disc = inertia({ ...base, shape: 'disc' });
   assert.ok(Math.abs(disc.I3 - 0.005) < 1e-15 && Math.abs(disc.I1 - (0.0025 + 0.0225)) < 1e-15);
+});
+
+test('a weak spin (1 rad/s) hits the post, leaves the pivot and comes to rest on the floor', () => {
+  const world = createWorld(initialState({ theta: 70 * deg, spin: 1, phiDot: 1.48, thetaDot: 0 }, base), base);
+  runWorld(world, base, 0.5);
+  assert.ok(world.detachedAt > 0.1 && world.detachedAt < 0.4, `released at ${world.detachedAt}`);
+  runWorld(world, base, 5);
+  const o = observeWorld(world, base);
+  assert.equal(o.phase, 'rest');
+  assert.ok(o.center[1] < STAND.ground + 0.1, 'lying low, on the floor or the base');
+  assert.ok(o.energy < observeWorld(createWorld(initialState({ theta: 70 * deg, spin: 1, phiDot: 1.48, thetaDot: 0 }, base), base), base).energy);
+});
+
+test('a fast gyroscope in steady precession never touches the stand', () => {
+  const phiDot = steadyPrecession(70 * deg, 100, base);
+  const world = runWorld(createWorld(initialState({ theta: 70 * deg, spin: 100, phiDot, thetaDot: 0 }, base), base), base, 5);
+  assert.equal(world.phase, 'pivot');
+  assert.ok(Math.abs(observeWorld(world, base).theta - 70 * deg) < 1e-3);
+});
+
+test('friction slowly drains the spin until the gyroscope sags onto the post and falls off', () => {
+  const p = { ...base, spinDamping: 6e-4, pivotDamping: 4e-3 };
+  const phiDot = steadyPrecession(80 * deg, 120, p);
+  const world = runWorld(createWorld(initialState({ theta: 80 * deg, spin: 120, phiDot, thetaDot: 0 }, p), p), p, 45);
+  assert.ok(world.detachedAt > 10, `held on for a while, released at ${world.detachedAt}`);
+  assert.equal(world.phase, 'rest');
+});
+
+test('leaving the pivot keeps the velocity, energy and angular momentum of the motion', () => {
+  const s = initialState({ theta: 130 * deg, spin: 40, phiDot: 2, thetaDot: 3 }, base);
+  const body = detach(s, base);
+  const o = observe(s, base);
+  const kinetic = 0.5 * base.mass * vec.dot(body.v, body.v) + 0.5 * vec.dot(body.L, o.omega);
+  assert.ok(Math.abs(kinetic - o.kinetic) < 1e-12);
+  assert.ok(vec.norm(vec.sub(body.v, vec.cross(o.omega, body.x))) < 1e-12);
+});
+
+test('in free flight the centre of mass follows a parabola and L about it is constant', () => {
+  const s = initialState({ theta: 40 * deg, spin: 60, phiDot: 3, thetaDot: 1 }, base);
+  const body = detach(s, base);
+  body.x = [0, 2, 0];
+  const L0 = body.L;
+  const v0 = body.v;
+  for (let i = 0; i < 200; i++) freeStep(body, base, 1e-3);
+  assert.ok(vec.norm(vec.sub(body.L, L0)) < 1e-12);
+  const expected = [v0[0] * 0.2, 2 + v0[1] * 0.2 - 0.5 * base.g * 0.04, v0[2] * 0.2];
+  assert.ok(vec.norm(vec.sub(body.x, expected)) < 2e-3);
 });

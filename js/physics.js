@@ -156,30 +156,36 @@ export function initialState(ic, p) {
   return { q, L: momentumFromOmega(q, omega, p) };
 }
 
+// Euler angles and rates of an axis e turning with angular velocity ω.
+// Pure kinematics, so it serves the pivoted and the free-flying wheel alike.
+export function axisKinematics(e, omega) {
+  const w3 = vec.dot(omega, e);
+  const wperp = vec.sub(omega, vec.scale(e, w3));
+  const horizontal = 1 - e[1] * e[1];
+  // ė = ω × e, and e × ė = ω⊥, so φ̇ = ω⊥·ŷ / sin²θ.
+  const phiDot = horizontal > 1e-8 ? wperp[1] / horizontal : 0;
+  return {
+    w3,
+    theta: Math.acos(Math.max(-1, Math.min(1, e[1]))),
+    phi: Math.atan2(-e[2], e[0]),
+    phiDot,
+    thetaDot: horizontal > 1e-8 ? -vec.dot(vec.cross(omega, e), Y) / Math.sqrt(horizontal) : 0,
+    spin: w3 - phiDot * e[1],
+  };
+}
+
 // Observable angles and rates, computed from the state rather than stored.
 export function observe(state, p) {
   const { I1, I3 } = inertia(p);
   const e = axisOf(state.q);
   const omega = omegaOf(state, p);
-  const w3 = vec.dot(omega, e);
-  const wperp = vec.sub(omega, vec.scale(e, w3));
-  const horizontal = 1 - e[1] * e[1];
-  const theta = Math.acos(Math.max(-1, Math.min(1, e[1])));
-  // ė = ω × e, and e × ė = ω⊥, so φ̇ = ω⊥·ŷ / sin²θ.
-  const phiDot = horizontal > 1e-8 ? wperp[1] / horizontal : 0;
-  const thetaDot = horizontal > 1e-8 ? -vec.dot(vec.cross(omega, e), Y) / Math.sqrt(horizontal) : 0;
   const Lperp = vec.sub(state.L, vec.scale(e, vec.dot(state.L, e)));
   const kinetic = 0.5 * (vec.dot(Lperp, Lperp) / I1 + (vec.dot(state.L, e) ** 2) / I3);
   const potential = p.mass * p.g * p.arm * e[1];
   return {
     e,
     omega,
-    w3,
-    theta,
-    phi: Math.atan2(-e[2], e[0]),
-    phiDot,
-    thetaDot,
-    spin: w3 - phiDot * e[1],
+    ...axisKinematics(e, omega),
     kinetic,
     potential,
     energy: kinetic + potential,

@@ -4,12 +4,7 @@ import {
   SHAPES,
   inertia,
   initialState,
-  observe,
   omegaOf,
-  momentumFromOmega,
-  torques,
-  rk4Step,
-  stableStep,
   steadyPrecession,
   gyroscopicApprox,
   nutationRate,
@@ -17,6 +12,7 @@ import {
   axisOf,
   vec,
 } from './physics.js';
+import { STAND, partSizes, createWorld, stepWorld, observeWorld, retune } from './world.js';
 
 const DEG = Math.PI / 180;
 
@@ -24,7 +20,7 @@ const DEG = Math.PI / 180;
 
 const FIELDS = {
   spin: { label: '스핀 ω<sub>s</sub>', min: -200, max: 200, step: 1, unit: 'rad/s', initial: true, fmt: (v) => `${v.toFixed(0)} rad/s · ${Math.abs((v * 60) / (2 * Math.PI)).toFixed(0)} rpm` },
-  theta: { label: '기울기 θ₀ <small>(수직에서)</small>', min: 0, max: 150, step: 1, unit: '°', initial: true, fmt: (v) => `${v.toFixed(0)}°` },
+  theta: { label: '기울기 θ₀ <small>(수직에서)</small>', min: 0, max: 120, step: 1, unit: '°', initial: true, fmt: (v) => `${v.toFixed(0)}°` },
   phiDot: { label: '처음 세차 속도 φ̇₀', min: -15, max: 25, step: 0.1, unit: 'rad/s', initial: true, fmt: (v) => `${v.toFixed(2)} rad/s` },
   thetaDot: { label: '처음 끄덕임 θ̇₀', min: -10, max: 10, step: 0.1, unit: 'rad/s', initial: true, fmt: (v) => `${v.toFixed(1)} rad/s` },
   mass: { label: '바퀴 질량 m', min: 0.1, max: 5, step: 0.1, fmt: (v) => `${v.toFixed(1)} kg` },
@@ -49,8 +45,7 @@ const PRESETS = [
   { id: 'cusp', label: '그냥 놓기 (뾰족점)', set: { spin: 50, theta: 60, phiDot: 0, timeScale: 0.25 } },
   { id: 'loop', label: '고리 장동', set: { spin: 50, theta: 60, phiDot: -2, timeScale: 0.25 } },
   { id: 'wave', label: '물결 장동', set: { spin: 50, theta: 60, phiDot: 5, timeScale: 0.25 } },
-  // Pivot friction lets it come to rest hanging down; frictionless it would swing back up forever.
-  { id: 'nospin', label: '스핀 0 (넘어짐)', set: { spin: 0, theta: 60, phiDot: 0, pivotDamping: 0.015, timeScale: 0.5 } },
+  { id: 'nospin', label: '스핀 0 (넘어짐)', set: { spin: 0, theta: 60, phiDot: 0, timeScale: 0.5 } },
   { id: 'sleep', label: '잠자는 팽이', set: { spin: 70, theta: 3, phiDot: 0 } },
   { id: 'free', label: '무중력', set: { spin: 40, theta: 30, phiDot: 4, g: 0 } },
   { id: 'friction', label: '마찰 있는 현실', steady: true, set: { spin: 120, theta: 80, spinDamping: 0.0006, pivotDamping: 0.004 } },
@@ -102,12 +97,12 @@ function setParam(key, value) {
     reset();
     return;
   }
-  const omega = omegaOf(sim.state, physicsParams());
+  const before = physicsParams();
   params[key] = value;
   if (key !== 'timeScale') {
-    sim.state = { q: sim.state.q, L: momentumFromOmega(sim.state.q, omega, physicsParams()) };
+    retune(sim.world, before, physicsParams());
     // A new g, m or I legitimately changes the energy; measure drift from here.
-    sim.E0 = observe(sim.state, physicsParams()).energy;
+    sim.E0 = observeWorld(sim.world, physicsParams()).energy;
   }
   syncControls();
   updateGeometry();
@@ -158,21 +153,21 @@ document.getElementById('steady').addEventListener('click', () => {
 
 // ---------- simulation state ----------
 
-const sim = { state: null, t: 0, running: true, E0: 0, Lref: 1, Wref: 1, spinAngle: 0, history: [] };
+const sim = { world: null, running: true, E0: 0, Lref: 1, Wref: 1, spinAngle: 0, history: [] };
 
 function reset() {
   const p = physicsParams();
-  sim.state = initialState(
+  const state = initialState(
     { theta: params.theta * DEG, phi: 0, spin: params.spin, phiDot: params.phiDot, thetaDot: params.thetaDot },
     p,
   );
-  sim.t = 0;
+  sim.world = createWorld(state, p);
   sim.spinAngle = 0;
-  sim.E0 = observe(sim.state, p).energy;
+  sim.E0 = observeWorld(sim.world, p).energy;
   // Arrow scales are fixed per run so shrinking L (friction) is visible.
   const { I1, I3 } = inertia(p);
-  sim.Lref = Math.max(vec.norm(sim.state.L), I3 * 30, I1 * 3);
-  sim.Wref = Math.max(vec.norm(omegaOf(sim.state, p)), 5);
+  sim.Lref = Math.max(vec.norm(state.L), I3 * 30, I1 * 3);
+  sim.Wref = Math.max(vec.norm(omegaOf(state, p)), 5);
   sim.history = [];
   trail.count = 0;
   updateTexts();
@@ -188,20 +183,23 @@ document.getElementById('reset').addEventListener('click', reset);
 // A short tap on the wheel: angular impulse ΔL = r × J, sized to give the
 // non-spinning wheel about 1.5 rad/s of swing.
 function kick(direction) {
+  if (sim.world.phase !== 'pivot') return;
   const p = physicsParams();
   const { I1 } = inertia(p);
-  const e = axisOf(sim.state.q);
+  const e = axisOf(sim.world.state.q);
   const lever = vec.scale(e, Math.max(p.arm, p.radius));
   const horizontal = vec.cross([0, 1, 0], e);
   const side = vec.norm(horizontal) > 1e-6 ? vec.scale(horizontal, 1 / vec.norm(horizontal)) : [0, 0, 1];
   const dir = direction === 'down' ? [0, -1, 0] : side;
   const impulse = (1.5 * I1) / vec.norm(lever);
-  sim.state = { q: sim.state.q, L: vec.add(sim.state.L, vec.cross(lever, vec.scale(dir, impulse))) };
-  sim.E0 = observe(sim.state, p).energy;
+  const s = sim.world.state;
+  sim.world.state = { q: s.q, L: vec.add(s.L, vec.cross(lever, vec.scale(dir, impulse))) };
+  sim.E0 = observeWorld(sim.world, p).energy;
   markPreset(null);
 }
-document.getElementById('kickDown').addEventListener('click', () => kick('down'));
-document.getElementById('kickSide').addEventListener('click', () => kick('side'));
+const kickButtons = [document.getElementById('kickDown'), document.getElementById('kickSide')];
+kickButtons[0].addEventListener('click', () => kick('down'));
+kickButtons[1].addEventListener('click', () => kick('side'));
 
 // ---------- three.js scene ----------
 
@@ -217,9 +215,9 @@ scene.background = new THREE.Color(0x0a0e14);
 scene.fog = new THREE.Fog(0x0a0e14, 3, 9);
 
 const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 50);
-camera.position.set(0.62, 0.36, 0.78);
+camera.position.set(0.85, 0.35, 1.1);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, -0.03, 0);
+controls.target.set(0, -0.22, 0);
 controls.enableDamping = true;
 controls.minDistance = 0.4;
 controls.maxDistance = 5;
@@ -232,7 +230,7 @@ sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -1, right: 1, top: 1, bottom: -1, near: 0.5, far: 6 });
 scene.add(sun);
 
-const GROUND = -0.62;
+const GROUND = STAND.ground;
 const ground = new THREE.Mesh(new THREE.CircleGeometry(3, 64), new THREE.MeshStandardMaterial({ color: 0x141a22, roughness: 0.95 }));
 ground.rotation.x = -Math.PI / 2;
 ground.position.y = GROUND;
@@ -244,22 +242,29 @@ scene.add(grid);
 
 const metal = new THREE.MeshStandardMaterial({ color: 0x9aa7b8, metalness: 0.8, roughness: 0.3 });
 const stand = new THREE.Group();
-const post = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.018, -GROUND - 0.02, 24), metal);
-post.position.y = (GROUND - 0.02) / 2 - 0.0;
+// Sizes come from STAND: these are exactly the shapes the wheel collides with.
+const baseTop = GROUND + STAND.baseHeight;
+const post = new THREE.Mesh(new THREE.CylinderGeometry(STAND.postRadius, STAND.postRadius, -baseTop, 24), metal);
+post.position.y = baseTop / 2;
 post.castShadow = true;
-const base = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.03, 48), new THREE.MeshStandardMaterial({ color: 0x2c3544, metalness: 0.4, roughness: 0.6 }));
-base.position.y = GROUND + 0.015;
+const base = new THREE.Mesh(new THREE.CylinderGeometry(STAND.baseRadius, STAND.baseRadius, STAND.baseHeight, 48), new THREE.MeshStandardMaterial({ color: 0x2c3544, metalness: 0.4, roughness: 0.6 }));
+base.position.y = GROUND + STAND.baseHeight / 2;
 base.receiveShadow = true;
 base.castShadow = true;
-const pivot = new THREE.Mesh(new THREE.SphereGeometry(0.02, 24, 16), new THREE.MeshStandardMaterial({ color: 0xe6edf3, metalness: 0.6, roughness: 0.25 }));
-stand.add(post, base, pivot);
+const pivot = new THREE.Mesh(new THREE.SphereGeometry(STAND.pivotRadius, 24, 16), new THREE.MeshStandardMaterial({ color: 0xe6edf3, metalness: 0.6, roughness: 0.25 }));
+const tray = new THREE.Mesh(
+  new THREE.CylinderGeometry(STAND.trayRadius + 0.01, STAND.trayRadius + 0.01, STAND.trayHeight, 96, 1, true),
+  new THREE.MeshStandardMaterial({ color: 0x2a3442, roughness: 0.8, side: THREE.DoubleSide, transparent: true, opacity: 0.55 }),
+);
+tray.position.y = GROUND + STAND.trayHeight / 2;
+stand.add(post, base, pivot, tray);
 scene.add(stand);
 
 // The axle frame carries precession and nutation; the wheel spins inside it
 // by a separately integrated display angle (see slowSpin).
 const axle = new THREE.Group();
 scene.add(axle);
-const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 1, 16), metal);
+const rod = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 16), metal);
 rod.castShadow = true;
 axle.add(rod);
 const tip = new THREE.Mesh(new THREE.SphereGeometry(0.01, 16, 12), new THREE.MeshStandardMaterial({ color: 0xc792ea, emissive: 0x4b2b66 }));
@@ -280,12 +285,12 @@ function buildWheel() {
   wheelParts = [];
   const r = params.radius;
   const disc = params.shape === 'disc';
-  const tube = disc ? r * 0.06 : r * 0.1;
+  const { tube, plate: plateThickness } = partSizes(physicsParams());
   const rim = new THREE.Mesh(new THREE.TorusGeometry(r, tube, 16, 96), rimMat);
   rim.rotation.x = Math.PI / 2;
   wheelParts.push(rim);
   if (disc) {
-    const plate = new THREE.Mesh(new THREE.CylinderGeometry(r, r, tube * 1.2, 64), rimMat);
+    const plate = new THREE.Mesh(new THREE.CylinderGeometry(r, r, plateThickness * 2, 64), rimMat);
     wheelParts.push(plate);
   }
   const spokes = disc ? 0 : 6;
@@ -311,14 +316,11 @@ function buildWheel() {
 }
 
 function updateGeometry() {
-  const arm = params.arm;
-  const rodLength = arm + 0.05;
-  rod.scale.set(1, rodLength, 1);
-  rod.position.y = rodLength / 2 - 0.02;
-  tip.position.y = rodLength - 0.02;
-  wheel.position.y = arm;
-  const s = Math.cbrt(params.mass);
-  pivot.scale.setScalar(Math.max(0.8, Math.min(1.4, s)));
+  const s = partSizes(physicsParams());
+  rod.scale.set(s.rodRadius, s.rodEnd - s.rodStart, s.rodRadius);
+  rod.position.y = (s.rodEnd + s.rodStart) / 2;
+  tip.position.y = s.rodEnd;
+  wheel.position.y = params.arm;
   buildWheel();
 }
 
@@ -399,39 +401,41 @@ function frame(now) {
   last = now;
   const p = physicsParams();
 
-  if (sim.running) {
-    let remaining = dt * params.timeScale;
-    let guard = 0;
-    while (remaining > 1e-9 && guard < 6000) {
-      const h = Math.min(stableStep(sim.state, p), remaining);
-      sim.state = rk4Step(sim.state, p, h);
-      remaining -= h;
-      sim.t += h;
-      guard += 1;
-    }
-    const o = observe(sim.state, p);
+  if (sim.running && sim.world.phase !== 'rest') {
+    stepWorld(sim.world, p, dt * params.timeScale);
+    const o = observeWorld(sim.world, p);
     const visualRate = checks.slowSpin.checked ? Math.sign(o.spin) * Math.min(Math.abs(o.spin), 2 * Math.PI * 1.2) : o.spin;
     sim.spinAngle = (sim.spinAngle + visualRate * dt * params.timeScale) % (2 * Math.PI);
-    sim.history.push({ t: sim.t, theta: o.theta / DEG, phiDot: o.phiDot });
-    while (sim.history.length && sim.history[0].t < sim.t - 8) sim.history.shift();
-    pushTrail(vec.scale(o.e, params.arm + 0.03));
+    const t = sim.world.t;
+    sim.history.push({ t, theta: o.theta / DEG, phiDot: o.phase === 'pivot' ? o.phiDot : NaN });
+    while (sim.history.length && sim.history[0].t < t - 8) sim.history.shift();
+    pushTrail(vec.add(o.center, vec.scale(o.e, partSizes(p).rodEnd - params.arm)));
   }
 
-  const o = observe(sim.state, p);
+  const o = observeWorld(sim.world, p);
+  // The axle frame sits where the pivot end of the axle is: at the cup, or flying with the wheel.
+  const axleOrigin = vec.sub(o.center, vec.scale(o.e, params.arm));
+  axle.position.set(...axleOrigin);
   // Axle orientation without spin: rotate ŷ onto e by the shortest arc.
   axle.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tmpV.set(...o.e));
   wheel.rotation.y = sim.spinAngle;
 
-  const T = torques(sim.state, p);
-  const Lvis = vec.scale(sim.state.L, L_LENGTH / sim.Lref);
-  setArrow(arrows.L, [0, 0, 0], Lvis, checks.showL.checked);
-  setArrow(arrows.tau, checks.showL.checked ? Lvis : [0, 0, 0], vec.scale(T.total, (L_LENGTH * TAU_DT) / sim.Lref), checks.showTau.checked);
-  setArrow(arrows.w, [0, 0, 0], vec.scale(o.omega, 0.3 / sim.Wref), checks.showW.checked);
-  setArrow(arrows.g, vec.scale(o.e, params.arm), [0, -0.012 * params.g, 0], checks.showG.checked && params.g > 0);
+  // On the pivot, L and τ are about the pivot; in flight, about the centre of mass (and τ = 0).
+  const origin = o.phase === 'pivot' ? [0, 0, 0] : o.center;
+  const Lvis = vec.scale(o.L, L_LENGTH / sim.Lref);
+  setArrow(arrows.L, origin, Lvis, checks.showL.checked);
+  setArrow(arrows.tau, checks.showL.checked ? vec.add(origin, Lvis) : origin, vec.scale(o.torque, (L_LENGTH * TAU_DT) / sim.Lref), checks.showTau.checked);
+  setArrow(arrows.w, origin, vec.scale(o.omega, 0.3 / sim.Wref), checks.showW.checked);
+  setArrow(arrows.g, o.center, [0, -0.012 * params.g, 0], checks.showG.checked && params.g > 0);
   refreshTrail();
 
   controls.update();
   renderer.render(scene, camera);
+
+  const onPivot = sim.world.phase === 'pivot';
+  kickButtons.forEach((b) => {
+    b.disabled = !onPivot;
+  });
 
   hudTimer += dt;
   if (hudTimer > 0.1) {
@@ -460,27 +464,34 @@ const joules = (v) => (Math.abs(v) >= 1 ? `${fmt(v, 2)} J` : `${fmt(v * 1000, 1)
 
 function updateTexts() {
   const p = physicsParams();
-  const o = observe(sim.state, p);
-  const { I1, I3 } = inertia(p);
+  const o = observeWorld(sim.world, p);
+  const { I3 } = inertia(p);
+  const onPivot = o.phase === 'pivot';
   // With (almost) no spin there is no gyroscope to precess; the pendulum root is not what we mean here.
-  const theory = Math.abs(o.spin) < 1 ? null : steadyPrecession(o.theta, o.spin, p);
+  const theory = !onPivot || Math.abs(o.spin) < 1 ? null : steadyPrecession(o.theta, o.spin, p);
   const approx = gyroscopicApprox(o.spin, p);
   const threshold = sleepingThreshold(p);
   const drift = o.energy - sim.E0;
-  const damped = p.spinDamping > 0 || p.pivotDamping > 0;
+  // Friction, and any impact with the stand or floor, take energy away.
+  const lossy = p.spinDamping > 0 || p.pivotDamping > 0 || !onPivot;
   const torqueFree = p.g === 0 || p.arm === 0;
+  const status = onPivot
+    ? ''
+    : `<dt class="note-row">${o.phase === 'rest' ? '💥 바닥에 멈춤' : '💥 받침대에서 분리'}</dt><dd class="note-row">${fmt(sim.world.detachedAt, 2)} s에 기둥에 부딪힘</dd>`;
   hud.innerHTML = `
-    <dt>시간</dt><dd>${fmt(sim.t, 2)} s${params.timeScale !== 1 ? ` <span class="slow">×${fmt(params.timeScale, 2)}</span>` : ''}</dd>
+    ${status}
+    <dt>시간</dt><dd>${fmt(sim.world.t, 2)} s${params.timeScale !== 1 ? ` <span class="slow">×${fmt(params.timeScale, 2)}</span>` : ''}</dd>
     <dt>기울기 θ</dt><dd>${fmt(o.theta / DEG, 1)}°</dd>
-    <dt>세차 속도 Ω</dt><dd>${fmt(o.phiDot, 2)} rad/s</dd>
-    <dt>정상 세차 이론값</dt><dd>${torqueFree ? '토크 없음' : theory === null ? '해 없음' : `${fmt(theory, 2)} rad/s`}</dd>
+    <dt>세차 속도 Ω</dt><dd>${onPivot ? `${fmt(o.phiDot, 2)} rad/s` : '—'}</dd>
+    <dt>정상 세차 이론값</dt><dd>${!onPivot ? '피벗 없음' : torqueFree ? '토크 없음' : theory === null ? '해 없음' : `${fmt(theory, 2)} rad/s`}</dd>
     <dt>스핀 ω<sub>s</sub></dt><dd>${fmt(o.spin, 1)} rad/s</dd>
     <dt>장동 주파수 ≈</dt><dd>${fmt(nutationRate(o.w3, p) / (2 * Math.PI), 2)} Hz</dd>
-    <dt>|L|</dt><dd>${fmt(vec.norm(sim.state.L) * 1000, 1)} g·m²/s</dd>
-    ${!damped && !torqueFree && Math.abs(o.w3) < 0.5 * sleepingThreshold(p) ? '<dt class="note-row">⚠️ 스핀이 너무 약해 떨어집니다</dt><dd class="note-row">마찰 0이라 진자처럼 되튕겨 올라옴</dd>' : ''}
-    <dt>${damped ? '마찰로 잃은 에너지' : '에너지 오차'}</dt><dd class="${!damped && Math.abs(drift) > 1e-3 ? 'warn' : ''}">${damped ? joules(drift) : `${fmt(drift * 1000, 3)} mJ`}</dd>`;
+    <dt>|L|${onPivot ? '' : ' (질량중심)'}</dt><dd>${fmt(vec.norm(o.L) * 1000, 1)} g·m²/s</dd>
+    <dt>${lossy ? '잃은 에너지' : '에너지 오차'}</dt><dd class="${!lossy && Math.abs(drift) > 1e-3 ? 'warn' : ''}">${lossy ? joules(drift) : `${fmt(drift * 1000, 3)} mJ`}</dd>`;
 
-  document.getElementById('liveFormula').innerHTML = torqueFree
+  document.getElementById('liveFormula').innerHTML = !onPivot
+    ? '바퀴가 받침대에서 떨어져 피벗이 없습니다. 피벗에 대한 중력 토크가 사라져 세차 공식은 더 이상 적용되지 않습니다. ↺ 처음부터를 누르세요.'
+    : torqueFree
     ? '지금은 중력 토크가 0이라 L이 고정됩니다. 세차는 토크가 아니라 처음 조건에서만 생깁니다.'
     : `m g l = ${fmt(p.mass, 1)}×${fmt(p.g, 2)}×${fmt(p.arm, 3)} = <b>${fmt(p.mass * p.g * p.arm, 3)}</b> N·m<br>
        I<sub>s</sub> ω<sub>s</sub> = ${fmt(I3 * 1000, 2)}×10⁻³ × ${fmt(o.spin, 1)} = <b>${fmt(I3 * o.spin, 4)}</b> kg·m²/s<br>
@@ -507,7 +518,7 @@ function drawChart() {
   ctx.clearRect(0, 0, w, h);
   const half = (h - 10) / 2;
   const span = historySeconds();
-  const t1 = Math.max(sim.t, span);
+  const t1 = Math.max(sim.world.t, span);
   const t0 = t1 - span;
   const hist = sim.history.filter((s) => s.t >= t0);
   const left = 46;
@@ -555,8 +566,8 @@ function drawChart() {
   };
 
   const p = physicsParams();
-  const o = observe(sim.state, p);
-  const theory = p.g === 0 || p.arm === 0 || Math.abs(o.spin) < 1 ? null : steadyPrecession(o.theta, o.spin, p);
+  const o = observeWorld(sim.world, p);
+  const theory = o.phase !== 'pivot' || p.g === 0 || p.arm === 0 || Math.abs(o.spin) < 1 ? null : steadyPrecession(o.theta, o.spin, p);
   panel(0, 'theta', '#c792ea', '기울기 θ (클수록 아래로 처짐) — 흔들림이 장동', '°', null);
   panel(half + 10, 'phiDot', '#ff9f1c', '세차 속도 Ω = φ̇ — 점선: 정상 세차 이론값', '', theory);
 }
