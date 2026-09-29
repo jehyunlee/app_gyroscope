@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from './vendor/OrbitControls.js';
+import { RoomEnvironment } from './vendor/RoomEnvironment.js';
 import {
   SHAPES,
   inertia,
@@ -213,6 +214,9 @@ viewport.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0e14);
 scene.fog = new THREE.Fog(0x0a0e14, 3, 9);
+// Metal is only as bright as what it reflects: the gyroscope mirrors a soft studio.
+// Applied per material (not scene.environment) so the dark floor stays dark.
+const studio = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
 
 const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 50);
 camera.position.set(0.85, 0.35, 1.1);
@@ -260,21 +264,25 @@ tray.position.y = GROUND + STAND.trayHeight / 2;
 stand.add(post, base, pivot, tray);
 scene.add(stand);
 
+// Silver: polished rim, brushed spokes and hub. One dark gunmetal block marks the spin.
+const silver = (color, roughness) => new THREE.MeshStandardMaterial({ color, metalness: 1, roughness, envMap: studio, envMapIntensity: 0.8 });
+const rimMat = silver(0xe8ebef, 0.14);
+const markMat = silver(0x3a3f47, 0.35);
+const spokeMat = silver(0xcfd4da, 0.3);
+const axleMat = silver(0xdfe3e8, 0.2);
+
 // The axle frame carries precession and nutation; the wheel spins inside it
 // by a separately integrated display angle (see slowSpin).
 const axle = new THREE.Group();
 scene.add(axle);
-const rod = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 16), metal);
+const rod = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 16), axleMat);
 rod.castShadow = true;
 axle.add(rod);
-const tip = new THREE.Mesh(new THREE.SphereGeometry(0.01, 16, 12), new THREE.MeshStandardMaterial({ color: 0xc792ea, emissive: 0x4b2b66 }));
+const tip = new THREE.Mesh(new THREE.SphereGeometry(0.01, 16, 12), axleMat);
 axle.add(tip);
 
 const wheel = new THREE.Group();
 axle.add(wheel);
-const rimMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, metalness: 0.55, roughness: 0.35 });
-const markMat = new THREE.MeshStandardMaterial({ color: 0xffd166, metalness: 0.3, roughness: 0.4, emissive: 0x3a2a00 });
-const spokeMat = new THREE.MeshStandardMaterial({ color: 0xc8d1dc, metalness: 0.7, roughness: 0.3 });
 let wheelParts = [];
 
 function buildWheel() {
